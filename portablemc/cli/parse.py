@@ -59,6 +59,8 @@ class StartNs(AuthBaseNs):
     temp_login: bool
     auth_service: str
     auth_anonymize: bool
+    auth_server: Optional[str]
+    no_ssl_verify: bool
     login: Optional[str]
     username: Optional[str]
     uuid: Optional[str]
@@ -67,14 +69,21 @@ class StartNs(AuthBaseNs):
     version: str
 
 class LoginNs(AuthBaseNs):
+    auth_server: Optional[str]
+    no_ssl_verify: bool
     email_or_username: str
 
 class LogoutNs(AuthBaseNs):
+    auth_server: Optional[str]
+    no_ssl_verify: bool
     email_or_username: str
 
 class ShowCompletionNs(RootNs):
     shell: str
 
+class AddCertNs(RootNs):
+    auth_server: str
+    jvm: Optional[Path]
 
 def register_common_help(parser: ArgumentParser) -> None:
     parser.formatter_class = new_help_formatter_class(40)
@@ -118,7 +127,7 @@ def register_subcommands(subparsers) -> None:
     register_login_arguments(subparsers.add_parser("login", help=_("args.login"), add_help=False))
     register_logout_arguments(subparsers.add_parser("logout", help=_("args.logout"), add_help=False))
     register_show_arguments(subparsers.add_parser("show", help=_("args.show"), add_help=False))
-
+    register_addcert_arguments(subparsers.add_parser("addcert", help=_("args.addcert"), add_help=False))
 
 def register_search_arguments(parser: ArgumentParser) -> None:
     
@@ -156,6 +165,8 @@ def register_start_arguments(parser: ArgumentParser) -> None:
     parser.add_argument("--include-bin", help=_("args.start.include_bin"), action="append", metavar="PATH", type=type_path)
     parser.add_argument("--auth-anonymize", help=_("args.start.auth_anonymize"), action="store_true")
     register_common_auth_service(parser)
+    parser.add_argument("--auth-server", help=_("args.start.auth_server"), metavar="URL")
+    parser.add_argument("--no-ssl-verify", help=_("args.start.no_ssl_verify"), action="store_true")
     parser.add_argument("-t", "--temp-login", help=_("args.start.temp_login"), action="store_true")
     parser.add_argument("-l", "--login", help=_("args.start.login"), type=type_email_or_username)
     parser.add_argument("-u", "--username", help=_("args.start.username"), metavar="NAME")
@@ -173,12 +184,16 @@ def register_start_arguments(parser: ArgumentParser) -> None:
 def register_login_arguments(parser: ArgumentParser) -> None:
     register_common_help(parser)
     register_common_auth_service(parser)
+    parser.add_argument("--auth-server", help=_("args.start.auth_server"), metavar="URL")
+    parser.add_argument("--no-ssl-verify", help=_("args.start.no_ssl_verify"), action="store_true")
     parser.add_argument("email_or_username", type=type_email_or_username)
 
 
 def register_logout_arguments(parser: ArgumentParser) -> None:
     register_common_help(parser)
     register_common_auth_service(parser)
+    parser.add_argument("--auth-server", help=_("args.start.auth_server"), metavar="URL")
+    parser.add_argument("--no-ssl-verify", help=_("args.start.no_ssl_verify"), action="store_true")
     parser.add_argument("email_or_username", type=type_email_or_username)
 
 
@@ -203,6 +218,14 @@ def register_show_completion_arguments(parser: ArgumentParser) -> None:
 
     for choice in shell_choices:
         add_completion(shell_arg, choice, _(f"args.show.completion.shell.comp.{choice}"))
+
+
+def register_addcert_arguments(parser: ArgumentParser) -> None:
+    register_common_help(parser)
+
+    parser.add_argument("--auth-server", required=True, help="URL of the auth server")
+    parser.add_argument("--jvm", help=_("args.start.jvm"), type=type_path)
+
 
 
 def new_help_formatter_class(max_help_position: int) -> Type[HelpFormatter]:

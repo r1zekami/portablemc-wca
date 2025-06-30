@@ -67,7 +67,8 @@ def http_request(method: str, url: str, *,
     data: Optional[bytes] = None,
     headers: Optional[dict] = None,
     accept: Optional[str] = None,
-    content_type: Optional[str] = None
+    content_type: Optional[str] = None,
+    verify: bool = True
 ) -> HttpResponse:
     """Make a synchronous HTTP request.
 
@@ -84,11 +85,14 @@ def http_request(method: str, url: str, *,
     if "User-Agent" not in headers:
         headers["User-Agent"] = f"portablemc/{LAUNCHER_VERSION}"
 
-    try:
-        import certifi
-        ctx = ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        ctx = None
+    if verify:
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            ctx = None
+    else:
+        ctx = ssl._create_unverified_context()
 
     try:
         req = urllib.request.Request(url, data, headers, method=method)

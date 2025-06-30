@@ -1,17 +1,73 @@
 """Mojang and Microsoft authentication utilities.
 """
 
-from urllib import parse as url_parse
+from .http import HttpError, http_request
 from uuid import UUID, uuid4, uuid5
 from pathlib import Path
 import platform
 import base64
 import json
+import urllib.parse as url_parse
 
-from .http import HttpError, http_request
+from typing import Optional, Dict, Type, Tuple, Any
 
-from typing import Optional, Dict, Type, Tuple
+# Global variable to store custom authentication server URL
+CUSTOM_AUTH_SERVER: Optional[str] = None
+# Global variable to control SSL certificate verification
+DISABLE_SSL_VERIFY: bool = False
 
+def set_custom_auth_server(url: str) -> None:
+    """Set the custom authentication server URL."""
+    global CUSTOM_AUTH_SERVER
+    CUSTOM_AUTH_SERVER = url
+
+def set_ssl_verify(verify: bool) -> None:
+    """Set SSL certificate verification mode."""
+    global DISABLE_SSL_VERIFY
+    DISABLE_SSL_VERIFY = not verify
+
+def get_auth_server_base_url() -> str:
+    """Get the authentication server BASE URL, either custom or default (no endpoint)."""
+    if CUSTOM_AUTH_SERVER:
+        return CUSTOM_AUTH_SERVER.rstrip('/')
+    else:
+        return "https://authserver.mojang.com"
+
+def get_auth_server_url() -> str:
+    """Get the authentication server URL, either custom or default."""
+    if CUSTOM_AUTH_SERVER:
+        # Remove trailing slash and add /auth/authenticate
+        base_url = CUSTOM_AUTH_SERVER.rstrip('/')
+        return f"{base_url}/auth/authenticate"
+    else:
+        return "https://authserver.mojang.com/authenticate"
+
+def get_auth_server_validate_url() -> str:
+    """Get the authentication server validate URL, either custom or default."""
+    if CUSTOM_AUTH_SERVER:
+        # Remove trailing slash and add /auth/validate
+        base_url = CUSTOM_AUTH_SERVER.rstrip('/')
+        return f"{base_url}/auth/validate"
+    else:
+        return "https://authserver.mojang.com/validate"
+
+def get_auth_server_refresh_url() -> str:
+    """Get the authentication server refresh URL, either custom or default."""
+    if CUSTOM_AUTH_SERVER:
+        # Remove trailing slash and add /auth/refresh
+        base_url = CUSTOM_AUTH_SERVER.rstrip('/')
+        return f"{base_url}/auth/refresh"
+    else:
+        return "https://authserver.mojang.com/refresh"
+
+def get_auth_server_name() -> str:
+    """Get the authentication server name for display purposes."""
+    if CUSTOM_AUTH_SERVER:
+        from urllib.parse import urlparse
+        parsed = urlparse(CUSTOM_AUTH_SERVER)
+        return parsed.netloc or parsed.path or "Custom Server"
+    else:
+        return "Mojang"
 
 class AuthSession:
     """An abstract class for defining authentication sessions. These sessions are then
@@ -62,16 +118,14 @@ class AuthSession:
         return ""
 
     def validate(self) -> bool:
-        """Validate that the current session is still actually authenticating the player.
-
-        :return: True if the session is still valid, when returning false the `refresh`
-        method may be called to update the session.
+        """Try validating the session to check if it's still valid.
         """
         return True
 
     def refresh(self) -> None:
         """Try refreshing the session to make it valid again.
         """
+        pass
 
     def invalidate(self) -> None:
         """Invalid the session so that `validate` will now return false.
@@ -120,18 +174,21 @@ class YggdrasilAuthSession(AuthSession):
             data["client_id"] = data.pop("client_token")
 
     def validate(self) -> bool:
-        return self.request("validate", {
+        payload = {
             "accessToken": self.access_token,
             "clientToken": self.client_id
-        }, False)[0] == 204
+        }
+        status, response = self.request("auth/validate", payload, False)
+        return status == 204
 
     def refresh(self):
-        _, res = self.request("refresh", {
+        payload = {
             "accessToken": self.access_token,
             "clientToken": self.client_id
-        })
-        self.access_token = res["accessToken"]
-        self.username = res["selectedProfile"]["name"]  # Refresh username if renamed (does it works? to check.).
+        }
+        _, res = self.request("auth/refresh", payload)
+        self.access_token = res["access_token"]
+        self.username = res["selectedProfile"]["name"]  # Refresh username if renamed (does it works? to check?).
 
     def invalidate(self):
         self.request("invalidate", {
@@ -141,7 +198,7 @@ class YggdrasilAuthSession(AuthSession):
 
     @classmethod
     def authenticate(cls, client_id: str, email: str, password: str) -> 'YggdrasilAuthSession':
-        _, res = cls.request("authenticate", {
+        _, res = cls.request("auth/authenticate", {
             "agent": {
                 "name": "Minecraft",
                 "version": 1
@@ -158,19 +215,34 @@ class YggdrasilAuthSession(AuthSession):
         return sess
 
     @classmethod
-    def request(cls, req: str, payload: dict, raise_error: bool = True) -> Tuple[int, dict]:
+    def request(cls, req: str, payload: dict, raise_error: bool = True, url: Optional[str] = None) -> Tuple[int, dict]:
         try:
-            res = http_request("POST", f"https://authserver.mojang.com/{req}", 
+            base_url = url if url is not None else get_auth_server_base_url()
+            if base_url.endswith('/') and req.startswith('/'):
+                full_url = base_url + req[1:]
+            elif not base_url.endswith('/') and not req.startswith('/'):
+                full_url = base_url + '/' + req
+            else:
+                full_url = base_url + req
+            res = http_request("POST", full_url, 
                 data=json.dumps(payload).encode("ascii"),
                 accept="application/json",
-                content_type="application/json")
-            return res.status, res.json()
+                content_type="application/json",
+                verify = not DISABLE_SSL_VERIFY) # True = Certificate verification enabled by default
+            status = res.status
+            if status == 204:
+                json_resp = {}
+            else:
+                json_resp = res.json()
+            return status, json_resp
         except HttpError as error:
             try:
                 if raise_error:
-                    raise AuthError(error.res.json()["errorMessage"])
+                    error_json = error.res.json() if error.res else {}
+                    error_message = error_json.get("errorMessage", "Unknown error") if error_json else "Network error"
+                    raise AuthError(error_message)
                 else:
-                    return error.res.status, error.res.json()
+                    return error.res.status, error.res.json() if error.res else {}
             except json.JSONDecodeError:
                 if raise_error:
                     raise AuthError("invalid json")
@@ -471,3 +543,4 @@ class DoesNotOwnMinecraftError(AuthError):
 class OutdatedTokenError(AuthError):
     def __init__(self, *args) -> None:
         super().__init__("outdated token", *args)
+

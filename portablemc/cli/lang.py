@@ -125,6 +125,8 @@ lang = {
         "On linux, version numbers are discarded (e.g. /usr/lib/foo.so.1.22.2 -> foo.so). "
         "Read the --exclude-lib help for use cases.",
     "args.start.auth_anonymize": "Anonymize your email or username for authentication messages.",
+    "args.start.auth_server": "Custom authentication server URL (e.g., https://your.auth.server/)",
+    "args.start.no_ssl_verify": "Disable SSL certificate verification for custom auth server (use only for auth servers with self-signed certificates)",
     "args.start.temp_login": "Flag used with -l (--login) to tell launcher not to cache your session if "
         "not already cached, disabled by default.",
     "args.start.login": "Use a email (or deprecated username) to authenticate using selected "
@@ -165,6 +167,19 @@ lang = {
     "args.show.completion.shell": "The shell to generate completion script for (default to your current shell, required if not found).",
     "args.show.completion.shell.comp.bash": "Generate completion script for Bash.",
     "args.show.completion.shell.comp.zsh": "Generate completion script for Zsh.",
+    # Args addcert
+    "args.addcert": "Add custom Auth Server SSL certificate to specified Java truststore", 
+    "addcert.auth_server": "URL of the authentication server, like https::/your.auth.server/",
+    "addcert.error": "Certificate operation failed: {error}",
+    "addcert.cert_extracted": "Certificate extracted successfully to {path}",
+    "addcert.no_jvm_found": "No JVM runtime found, please specify --jvm path",
+    "addcert.success": "Certificate imported successfully with alias: {alias}",
+    "addcert.import_error": "Failed to import certificate: {error}",
+    "addcert.success_multiple": "Certificate imported to {count} JVM(s) successfully",
+    "addcert.certificates_injected_all": "Automatically injected [{count}] certificates into {jvms} JVM(s)",
+    "addcert.certificates_injected_new_jvm": "Injected [{count}] certificates into newly loaded JVM",
+    "start.custom_auth_server": "Using custom authentication server: {server}",
+    "start.custom_auth_server_jvm_args": "Added custom auth server JVM args: [{args}]",
     # Common
     "echo": "{echo}",
     "cancelled": "Cancelled.",
@@ -266,9 +281,9 @@ lang = {
     "auth.logged_in": "Session logged for {email}",
     "auth.error": "Error authenticating: {message}",
     # Auth Yggdrasil
-    "auth.yggdrasil": "Authenticating {email} with Mojang...",
+    "auth.yggdrasil": "Authenticating {email} with {server}...",
     "auth.yggdrasil.enter_password": "Password: ",
-    "auth.yggdrasil.deprecated": "Mojang authentication is deprecated and does not work anymore.",
+    "auth.yggdrasil.deprecated": "Yggdrasil (Mojang) authentication is deprecated.",
     # Auth Microsoft
     "auth.microsoft": "Authenticating {email} with Microsoft...",
     "auth.microsoft.no_browser_fallback": "Authenticating without local browser, please go to the following url to login:",

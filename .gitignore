@@ -10,3 +10,7 @@ __pycache__
 
 # To avoid cluttering when switching branch with 'rust-rewrite' branch.
 /rust
+
+#hehe
+/venv
+.venv

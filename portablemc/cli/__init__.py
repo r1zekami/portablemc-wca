@@ -6,6 +6,11 @@ other utilities are defined in child modules.
 **Note that this module, even when no *underscore* "_" is used, should not be considered
 as part of the public API.**
 """
+import urllib.request
+import urllib.parse
+import json
+import ssl
+import shutil
 
 from subprocess import Popen
 from pathlib import Path
@@ -13,7 +18,7 @@ import socket
 import sys
 import io
 
-from .parse import register_arguments, RootNs, SearchNs, StartNs, LoginNs, LogoutNs, AuthBaseNs, ShowCompletionNs
+from .parse import register_arguments, RootNs, SearchNs, StartNs, LoginNs, LogoutNs, AuthBaseNs, ShowCompletionNs, AddCertNs
 
 from .util import format_locale_date, format_time, format_number, anonymize_email
 from .output import Output, HumanOutput, MachineOutput, OutputTable
@@ -22,7 +27,7 @@ from .lang import get as _, lang
 from portablemc.util import LibrarySpecifier
 from portablemc.http import HttpError
 from portablemc.auth import AuthDatabase, AuthSession, MicrosoftAuthSession, \
-    YggdrasilAuthSession, AuthError
+    YggdrasilAuthSession, AuthError, set_custom_auth_server, get_auth_server_name, set_ssl_verify
 
 from portablemc.standard import Context, Version, VersionManifest, SimpleWatcher, \
     DownloadError, DownloadStartEvent, DownloadProgressEvent, DownloadCompleteEvent, \
@@ -136,6 +141,7 @@ def get_command_handlers() -> CommandTree:
             "lang": cmd_show_lang,
             "completion": cmd_show_completion,
         },
+        "addcert": cmd_addcert
     }
 
 
@@ -340,6 +346,23 @@ def cmd_start(ns: StartNs):
     if ns.lwjgl is not None:
         version.fixes[Version.FIX_LWJGL] = ns.lwjgl
 
+    # Set custom authentication server if specified (must be done before authentication)
+    if ns.auth_server is not None:
+        from urllib.parse import urlparse
+        
+        # Parse the auth server URL
+        parsed_url = urlparse(ns.auth_server)
+        if parsed_url.scheme and parsed_url.netloc:
+            # Set the custom auth server globally for authentication
+            set_custom_auth_server(ns.auth_server)
+            
+            # Set SSL verification mode
+            set_ssl_verify(not ns.no_ssl_verify)
+            
+            if ns.verbose >= 1:
+                ns.out.task("INFO", "start.custom_auth_server", server=ns.auth_server)
+                ns.out.finish()
+
     if ns.login is not None:
         version.auth_session = prompt_authenticate(ns, ns.login, not ns.temp_login, ns.auth_anonymize)
         if version.auth_session is None:
@@ -397,6 +420,34 @@ def cmd_start(ns: StartNs):
             env.jvm_args.extend(DEFAULT_JVM_ARGS)
         elif len(ns.jvm_args):
             env.jvm_args.extend(ns.jvm_args.split())
+
+        # Add custom authentication server JVM arguments if specified
+        if ns.auth_server is not None:
+            from urllib.parse import urlparse
+            
+            # Parse the auth server URL
+            parsed_url = urlparse(ns.auth_server)
+            if parsed_url.scheme and parsed_url.netloc:
+                # Remove trailing slash if present
+                base_url = ns.auth_server.rstrip('/')
+                
+                # Add custom auth server JVM arguments
+                custom_auth_args = [
+                    "-Dminecraft.api.env=custom",
+                    f"-Dminecraft.api.auth.host={base_url}/auth",
+                    f"-Dminecraft.api.account.host={base_url}/account", 
+                    f"-Dminecraft.api.session.host={base_url}/session",
+                    f"-Dminecraft.api.services.host={base_url}/services"
+                ]
+                
+                env.jvm_args.extend(custom_auth_args)
+                
+                # Debug output to show JVM arguments
+                ns.out.task("INFO", "start.custom_auth_server_jvm_args", args=" ".join(custom_auth_args))
+                
+                if ns.verbose >= 1:
+                    ns.out.task("INFO", "start.custom_auth_server", server=ns.auth_server)
+                    ns.out.finish()
 
         # This CliRunner will abort running if in dry mode.
         env.run(CliRunner(ns))
@@ -503,6 +554,13 @@ def cmd_start_handler(ns: StartNs, kind: str, parts: List[str]) -> Optional[Vers
 
 
 def cmd_login(ns: LoginNs):
+    # Set custom authentication server if specified
+    if hasattr(ns, 'auth_server') and ns.auth_server:
+        from urllib.parse import urlparse
+        parsed_url = urlparse(ns.auth_server)
+        if parsed_url.scheme and parsed_url.netloc:
+            set_custom_auth_server(ns.auth_server)
+            set_ssl_verify(not ns.no_ssl_verify)
     session = prompt_authenticate(ns, ns.email_or_username, True)
     if session is not None:
         ns.out.task("INFO", "login.tip.remember_start_login", email=ns.email_or_username)
@@ -511,7 +569,13 @@ def cmd_login(ns: LoginNs):
 
 
 def cmd_logout(ns: LogoutNs):
-
+    # Set custom authentication server if specified
+    if hasattr(ns, 'auth_server') and ns.auth_server:
+        from urllib.parse import urlparse
+        parsed_url = urlparse(ns.auth_server)
+        if parsed_url.scheme and parsed_url.netloc:
+            set_custom_auth_server(ns.auth_server)
+            set_ssl_verify(not ns.no_ssl_verify)
     session_class = {
         "microsoft": MicrosoftAuthSession,
         "yggdrasil": YggdrasilAuthSession,
@@ -591,6 +655,128 @@ def cmd_show_completion(ns: ShowCompletionNs):
     print(content, end="")
 
 
+def extract_cert(host: str, port: int, output_path: str) -> bool:
+    """Extract SSL certificate from a host and save it as a PEM file."""
+
+    import ssl
+    import socket
+    import argparse
+
+    try:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port)) as sock:
+            with context.wrap_socket(sock, server_hostname=host) as ssock:
+                cert = ssock.getpeercert(binary_form=True)
+                if cert is None:
+                    print("Error: No certificate received from server")
+                    return False
+                pem_cert = ssl.DER_cert_to_PEM_cert(cert)
+                with open(output_path, 'w') as f:
+                    f.write(pem_cert)
+                return True
+    except Exception as e:
+        print(f"Error extracting certificate: {e}")
+        return False
+
+def inject_cert(cert_file: str, jvm_path: str, alias: str) -> Tuple[bool, str]:
+    """Import certificate into Java cacerts keystore."""
+
+    import subprocess
+    import os
+    import argparse
+
+    keytool_path = os.path.join(jvm_path, 'bin', 'keytool.exe' if os.name == 'nt' else 'keytool')
+    if not os.path.exists(keytool_path):
+        return False, f"keytool not found at {keytool_path}"
+    if not os.path.exists(cert_file):
+        return False, f"certificate file not found at {cert_file}"
+    
+    storepass = "changeit"
+    command = [
+        keytool_path,
+        '-importcert',
+        '-file', cert_file,
+        '-cacerts',
+        '-storepass', storepass,
+        '-alias', alias,
+        '-noprompt'
+    ]
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return True, ""
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.strip() if e.stderr else str(e)
+        return False, error_msg
+
+
+def cmd_addcert(ns: AddCertNs) -> None:
+    """Extract SSL certificate from a host and save it as a PEM file, inject/import this file
+    into java cacerts keystore, making authentication server or given url Java-trusted"""
+    
+    from urllib.parse import urlparse
+    from pathlib import Path
+    import os
+
+    parsed_url = urlparse(ns.auth_server)
+    host = parsed_url.hostname
+    port = parsed_url.port
+
+    if host is None:
+        ns.out.task("FAILED", "addcert.error", error="Invalid URL: no hostname found")
+        ns.out.finish()
+        return
+
+    if port is None:
+        port = 443
+
+    # Extract certificate directly to global storage
+    trusted_ca_dir = ensure_trusted_ca_dir(ns.context)
+    storage_path = trusted_ca_dir / f"{host}.pem"
+    
+    if not extract_cert(host, port, str(storage_path)):
+        ns.out.task("FAILED", "addcert.error", error="Failed to extract certificate")
+        ns.out.finish()
+        return
+    ns.out.task("OK", "addcert.cert_extracted", path=str(storage_path))
+    ns.out.finish()
+
+    # Inject certificate into current JVM if specified
+    if ns.jvm:
+        jvm_path = Path(ns.jvm)
+        alias = f"{host}_cert_{int(os.times().elapsed)}"
+        success, error_msg = inject_cert_from_storage(str(storage_path), str(jvm_path), alias)
+        if success:
+            ns.out.task("OK", "addcert.success", alias=alias)
+            ns.out.finish()
+        else:
+            ns.out.task("FAILED", "addcert.import_error", error=error_msg)
+            ns.out.finish()
+    else:
+        # Inject into all available JVMs
+        jvm_dir = ns.context.jvm_dir
+        jvm_runtimes = list(jvm_dir.glob("java-runtime-*"))
+        if not jvm_runtimes:
+            ns.out.task("FAILED", "addcert.no_jvm_found")
+            ns.out.finish()
+            return
+        
+        injected_count = 0
+        for jvm_path in jvm_runtimes:
+            alias = f"{host}_cert_{int(os.times().elapsed)}"
+            success, error_msg = inject_cert_from_storage(str(storage_path), str(jvm_path), alias)
+            if success:
+                injected_count += 1
+        
+        if injected_count > 0:
+            ns.out.task("OK", "addcert.success_multiple", count=injected_count)
+            ns.out.finish()
+        else:
+            ns.out.task("FAILED", "addcert.import_error", error="Failed to import certificate to any JVM")
+            ns.out.finish()
+
+
 def prompt_authenticate(ns: AuthBaseNs, email: str, caching: bool, anonymise: bool = False) -> Optional[AuthSession]:
     """Prompt the user to login using the given email (or legacy username) for specific 
     service (Microsoft or Yggdrasil) and return the :class:`AuthSession` if successful, 
@@ -614,12 +800,14 @@ def prompt_authenticate(ns: AuthBaseNs, email: str, caching: bool, anonymise: bo
     task_text = f"auth.{service}"
     email_text = anonymize_email(email) if anonymise else email
 
-    ns.out.task("..", task_text, email=email_text)
+    # Get server name for display
+    server_name = get_auth_server_name()
+
+    ns.out.task("INFO", task_text, email=email_text, server=server_name)
 
     session = ns.auth_database.get(email, session_class)
     if session is not None:
         try:
-            
             if not session.validate():
                 ns.out.task("..", "auth.refreshing")
                 session.refresh()
@@ -627,16 +815,13 @@ def prompt_authenticate(ns: AuthBaseNs, email: str, caching: bool, anonymise: bo
                 ns.out.task("OK", "auth.refreshed", email=email_text)
             else:
                 ns.out.task("OK", "auth.validated", email=email_text)
-
             ns.out.finish()
             return session
-        
         except AuthError as error:
-            ns.out.task("FAILED", None)
-            ns.out.task(None, "auth.error", message=str(error))
+            ns.out.task("FAILED", "auth.error", message=str(error))
             ns.out.finish()
-
-    ns.out.task("..", task_text, email=email_text)
+            if str(error).strip().lower() == "network error":
+                sys.exit(EXIT_FAILURE)
 
     try:
 
@@ -663,7 +848,7 @@ def prompt_authenticate(ns: AuthBaseNs, email: str, caching: bool, anonymise: bo
     return session
 
 
-def prompt_yggdrasil_authenticate(ns: RootNs, email_or_username: str) -> Optional[YggdrasilAuthSession]:
+def prompt_yggdrasil_authenticate(ns: RootNs, email_or_username: str, server_name: str = "", email_text: str = "") -> Optional[YggdrasilAuthSession]:
     ns.out.finish()
     ns.out.task("..", "auth.yggdrasil.enter_password")
     password = ns.out.prompt(password=True)
@@ -836,13 +1021,35 @@ class StartWatcher(SimpleWatcher):
                 ns.out.task("OK", "start.forge.resolved", api=e._api, version=e.forge_version)
                 ns.out.finish()
 
+        def jvm_loaded(e: JvmLoadedEvent) -> None:
+            finish_task(f"start.jvm.loaded.{e.kind}", version=e.version or "")
+            
+            # Inject certificates into newly loaded JVM (in case it was updated)
+            if e.kind == JvmLoadedEvent.MOJANG and e.version:
+                try:
+                    # The version should contain the JVM path
+                    jvm_path = Path(e.version)
+                    if jvm_path.exists() and jvm_path.is_dir():
+                        # Inject all stored certificates into this specific JVM
+                        try:
+                            injected_count = inject_all_stored_certificates(str(jvm_path), ns.context)
+                            if injected_count > 0:
+                                ns.out.task("INFO", "addcert.certificates_injected_new_jvm", count=injected_count)
+                                ns.out.finish()
+                        except Exception:
+                            # Silently fail if certificate injection fails
+                            pass
+                except Exception:
+                    # Silently fail if we can't determine JVM path
+                    pass
+
         super().__init__({
             VersionLoadingEvent: lambda e: progress_task("start.version.loading", version=e.version),
             VersionFetchingEvent: lambda e: progress_task("start.version.fetching", version=e.version),
             VersionLoadedEvent: lambda e: finish_task("start.version.loaded.fetched" if e.fetched else "start.version.loaded", version=e.version),
             FeaturesEvent: features,
             JvmLoadingEvent: lambda e: progress_task("start.jvm.loading"),
-            JvmLoadedEvent: lambda e: finish_task(f"start.jvm.loaded.{e.kind}", version=e.version or ""),
+            JvmLoadedEvent: jvm_loaded,
             JarFoundEvent: lambda e: finish_task("start.jar.found"),
             AssetsResolveEvent: assets_resolve,
             LibrariesResolvingEvent: lambda e: progress_task("start.libraries.resolving"),
@@ -917,6 +1124,26 @@ class CliRunner(StreamRunner):
         if self.ns.dry:
             return None
         
+        # Inject certificates into ALL available JVMs before launching the process
+        try:
+            jvm_dir = self.ns.context.jvm_dir
+            jvm_runtimes = list(jvm_dir.glob("java-runtime-*"))
+            
+            total_injected = 0
+            for jvm_path in jvm_runtimes:
+                if jvm_path.exists() and jvm_path.is_dir():
+                    # Inject all stored certificates into this JVM
+                    injected_count = inject_all_stored_certificates(str(jvm_path), self.ns.context)
+                    total_injected += injected_count
+            
+            if total_injected > 0:
+                self.ns.out.task("INFO", "addcert.certificates_injected_all", count=total_injected, jvms=len(jvm_runtimes))
+                self.ns.out.finish()
+                
+        except Exception:
+            # Silently fail if certificate injection fails
+            pass
+        
         return super().process_create(args, work_dir)
 
     def process_stream_event(self, event: Any) -> None:
@@ -930,3 +1157,74 @@ class CliRunner(StreamRunner):
                 out.print(f"{event.throwable.rstrip()}\n")
         else:
             out.print(str(event))
+
+def get_trusted_ca_dir(context: Context) -> Path:
+    """Get the path to the trusted CA certificates directory."""
+    return context.work_dir / "trustedca"
+
+def ensure_trusted_ca_dir(context: Context) -> Path:
+    """Ensure the trusted CA directory exists and return its path."""
+    trusted_ca_dir = get_trusted_ca_dir(context)
+    trusted_ca_dir.mkdir(exist_ok=True)
+    return trusted_ca_dir
+
+def inject_cert_from_storage(storage_path: str, jvm_path: str, alias: str) -> Tuple[bool, str]:
+    """Import certificate from storage into Java cacerts keystore."""
+    import subprocess
+    import os
+    
+    keytool_path = os.path.join(jvm_path, 'bin', 'keytool.exe' if os.name == 'nt' else 'keytool')
+    if not os.path.exists(keytool_path):
+        return False, f"keytool not found at {keytool_path}"
+    if not os.path.exists(storage_path):
+        return False, f"certificate file not found at {storage_path}"
+    
+    storepass = "changeit"
+    command = [
+        keytool_path,
+        '-importcert',
+        '-file', storage_path,
+        '-cacerts',
+        '-storepass', storepass,
+        '-alias', alias,
+        '-noprompt'
+    ]
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return True, ""
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.strip() if e.stderr else str(e)
+        return False, error_msg
+
+def inject_all_stored_certificates(jvm_path: str, context: Context) -> int:
+    """Inject all certificates from global storage into the specified JVM."""
+    import os
+    
+    trusted_ca_dir = get_trusted_ca_dir(context)
+    if not trusted_ca_dir.exists():
+        return 0
+    
+    injected_count = 0
+    for cert_file in trusted_ca_dir.glob("*.pem"):
+        try:
+            # Extract host from filename (format: hostname.pem)
+            host = cert_file.stem
+            
+            alias = f"{host}_cert_{int(os.times().elapsed)}"
+            
+            success, error_msg = inject_cert_from_storage(str(cert_file), jvm_path, alias)
+            if success:
+                injected_count += 1
+                
+        except Exception:
+            # Skip certificates that can't be injected
+            continue
+    
+    return injected_count
+
+def find_system_java():
+    java_path = shutil.which("java")
+    print(java_path)
+    if java_path is None:
+        raise RuntimeError("System Java not found in PATH. Please install Java or specify --jvm manually.")
+    return java_path
