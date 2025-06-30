@@ -10,7 +10,7 @@ To use a custom authentication server, specify it via the `--auth-server` flag:
 --auth-server="https://your.auth.server/"
 ```
 
-If specified, native "https://authserver.mojang.com/authenticate" will be changed to "https://your.auth.server/auth/authenticate", and the following Yggdrasil endpoints will be automatically passed to jvm-args:
+If specified, native `https://authserver.mojang.com/authenticate` will be changed to your `https://your.auth.server/auth/authenticate`, and the following Yggdrasil endpoints will be automatically passed to jvm-args:
 ```
 -Dminecraft.api.env=custom 
 -Dminecraft.api.auth.host=https://your.auth.server/auth 
